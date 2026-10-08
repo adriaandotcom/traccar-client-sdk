@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.plus
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.withTimeoutOrNull
@@ -30,8 +31,9 @@ import platform.darwin.NSObject
 class IosLocationSource(
     scope: ComponentCoroutineScope,
     config: Config,
-    state: StateFlow<State>,
-) : LocationSource {
+    private val state: StateFlow<State>,
+) : LocationSource, SignalSource {
+    override val signals = MutableSharedFlow<Signal>(extraBufferCapacity = 8)
 
     private val locationConfig = config.location.effective
     private val mainScope = scope + Dispatchers.Main
@@ -47,24 +49,38 @@ class IosLocationSource(
         mainScope.observeState(state, State::locationMode, inactive = LocationMode.Off) { mode ->
             when (mode) {
                 LocationMode.Active -> ensureStarted()
-                LocationMode.Stationary -> ensureStopped(awaitFinalFix = true)
+                LocationMode.Stationary -> {
+                    if (manager == null) ensureStarted(standard = false)
+                    ensureStopped(awaitFinalFix = true)
+                }
                 LocationMode.Off -> ensureStopped(awaitFinalFix = false)
             }
         }
     }
 
-    private suspend fun ensureStarted() {
-        if (manager != null) return
+    private suspend fun ensureStarted(standard: Boolean = true) {
+        manager?.let { if (standard) it.startUpdatingLocation(); return }
 
-        val authStatus = CompletableDeferred<Boolean>()
         val newDelegate = object : NSObject(), CLLocationManagerDelegateProtocol {
             override fun locationManager(manager: CLLocationManager, didUpdateLocations: List<*>) {
                 didUpdateLocations.forEach { value ->
                     val location = value as CLLocation
                     lastLocation = location
-                    positions.tryEmit(location.toPosition())
+                    if (location.horizontalAccuracy < 0) return@forEach
+                    val point = location.toPosition()
+                    // Suspend emission instead of silently dropping a burst while SQLite commits.
+                    mainScope.launch { positions.emit(point) }
+                    val anchor = state.value.lastAcceptedLocation
+                    if (state.value.paused && anchor?.latitude != null && anchor.longitude != null &&
+                        location.distanceFromLocation(CLLocation(anchor.latitude, anchor.longitude)) > locationConfig.stationaryRadiusMeters) {
+                        mainScope.launch { signals.emit(Signal.StationaryExit) }
+                    }
                     pendingLocation?.complete(location)
                 }
+            }
+
+            override fun locationManagerDidPauseLocationUpdates(manager: CLLocationManager) {
+                mainScope.launch { signals.emit(Signal.StationaryEnter) }
             }
 
             override fun locationManager(manager: CLLocationManager, didFailWithError: NSError) {
@@ -72,12 +88,9 @@ class IosLocationSource(
             }
 
             override fun locationManagerDidChangeAuthorization(manager: CLLocationManager) {
-                if (authStatus.isCompleted) return
-                when (manager.authorizationStatus) {
-                    kCLAuthorizationStatusAuthorizedAlways,
-                    kCLAuthorizationStatusAuthorizedWhenInUse -> authStatus.complete(true)
-                    kCLAuthorizationStatusDenied,
-                    kCLAuthorizationStatusRestricted -> authStatus.complete(false)
+                if (manager.authorizationStatus != kCLAuthorizationStatusAuthorizedAlways &&
+                    manager.authorizationStatus != kCLAuthorizationStatusAuthorizedWhenInUse) {
+                    manager.stopUpdatingLocation()
                 }
             }
         }
@@ -88,7 +101,7 @@ class IosLocationSource(
             desiredAccuracy = locationConfig.accuracy.toIosAccuracy()
             distanceFilter = kCLDistanceFilterNone
             allowsBackgroundLocationUpdates = true
-            pausesLocationUpdatesAutomatically = false
+            pausesLocationUpdatesAutomatically = true
         }
 
         val authorized = when (newManager.authorizationStatus) {
@@ -96,10 +109,8 @@ class IosLocationSource(
             kCLAuthorizationStatusAuthorizedWhenInUse -> true
             kCLAuthorizationStatusDenied,
             kCLAuthorizationStatusRestricted -> false
-            else -> {
-                newManager.requestAlwaysAuthorization()
-                authStatus.await()
-            }
+            else -> false // Places owns all permission prompts.
+
         }
 
         if (!authorized) {
@@ -110,7 +121,7 @@ class IosLocationSource(
         }
 
         newManager.startMonitoringSignificantLocationChanges()
-        newManager.startUpdatingLocation()
+        if (standard) newManager.startUpdatingLocation()
         manager = newManager
         Log.log("Location updates started")
     }
@@ -118,18 +129,9 @@ class IosLocationSource(
     @OptIn(ExperimentalForeignApi::class)
     private suspend fun ensureStopped(awaitFinalFix: Boolean) {
         val current = manager ?: return
-        if (awaitFinalFix) {
-            val deferred = CompletableDeferred<CLLocation?>()
-            pendingLocation = deferred
-            current.requestLocation()
-            val finalFix = try {
-                withTimeoutOrNull(10.seconds) { deferred.await() }
-            } finally {
-                pendingLocation = null
-            }
-            finalFix?.let { positions.tryEmit(it.toPosition()) }
-        }
         current.stopUpdatingLocation()
+        // Keep passive recovery alive without another GPS fix when stationary.
+        if (awaitFinalFix) return
         current.stopMonitoringSignificantLocationChanges()
         current.delegate = null
         Log.log("Location updates stopped")

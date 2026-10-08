@@ -26,13 +26,11 @@ class LocationFilter(
         if (currentPaused != lastProcessedPaused) {
             lastProcessedPaused = currentPaused
             persistAccepted(position)
-            Log.log("Transition accepted ${position.latitude},${position.longitude}")
             return position
         }
         val previous = lastAccepted
         if (previous == null) {
             persistAccepted(position)
-            Log.log("Location accepted ${position.latitude},${position.longitude}")
             return position
         }
         val timeTrigger = locationConfig.intervalSeconds > 0 &&
@@ -43,10 +41,8 @@ class LocationFilter(
             bearingChange(previous.bearing, position.bearing) >= locationConfig.angleDegrees
         if (timeTrigger || distanceTrigger || angleTrigger) {
             persistAccepted(position)
-            Log.log("Location accepted ${position.latitude},${position.longitude}")
             return position
         }
-        Log.log("Location filtered ${position.latitude},${position.longitude}")
         return null
     }
 

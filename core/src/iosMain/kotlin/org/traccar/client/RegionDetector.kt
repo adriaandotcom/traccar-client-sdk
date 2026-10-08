@@ -15,6 +15,7 @@ import platform.CoreLocation.CLLocationCoordinate2DMake
 import platform.CoreLocation.CLLocationManager
 import platform.CoreLocation.CLLocationManagerDelegateProtocol
 import platform.CoreLocation.CLRegion
+import platform.CoreLocation.CLRegionState
 import platform.CoreLocation.kCLAuthorizationStatusAuthorizedAlways
 import platform.Foundation.NSError
 import platform.darwin.NSObject
@@ -51,13 +52,17 @@ class RegionDetector(
     }
 
     private suspend fun waitForAnchor(): Position? {
-        val fresh = withTimeoutOrNull(WAIT_TIMEOUT) { incomingPositions.first() }
-        return fresh ?: state.value.lastAcceptedLocation
+        return state.value.lastAcceptedLocation ?: withTimeoutOrNull(WAIT_TIMEOUT) { incomingPositions.first() }
     }
 
     @OptIn(ExperimentalForeignApi::class)
     private fun register(latitude: Double, longitude: Double, radius: Int) {
         val newDelegate = object : NSObject(), CLLocationManagerDelegateProtocol {
+            override fun locationManager(manager: CLLocationManager, didDetermineState: CLRegionState, forRegion: CLRegion) {
+                if (forRegion.identifier == REGION_ID && didDetermineState == CLRegionState.CLRegionStateOutside) {
+                    scope.launch { signals.emit(Signal.StationaryExit) }
+                }
+            }
             override fun locationManager(manager: CLLocationManager, didExitRegion: CLRegion) {
                 if (didExitRegion.identifier == REGION_ID) {
                     Log.log("Region exit")
@@ -88,6 +93,7 @@ class RegionDetector(
         region.notifyOnExit = true
         region.notifyOnEntry = false
         newManager.startMonitoringForRegion(region)
+        newManager.requestStateForRegion(region)
         Log.log("Region monitoring registered")
         manager = newManager
     }
@@ -95,7 +101,7 @@ class RegionDetector(
     private fun unregister() {
         manager?.let { current ->
             current.monitoredRegions.forEach { region ->
-                (region as? CLRegion)?.let { current.stopMonitoringForRegion(it) }
+                (region as? CLRegion)?.takeIf { it.identifier == REGION_ID }?.let { current.stopMonitoringForRegion(it) }
             }
             current.delegate = null
             Log.log("Region monitoring removed")

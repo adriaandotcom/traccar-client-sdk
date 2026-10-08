@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import platform.CoreMotion.CMMotionActivity
+import platform.CoreMotion.CMAuthorizationStatusAuthorized
 import platform.CoreMotion.CMMotionActivityManager
 import platform.Foundation.NSOperationQueue
 
@@ -31,6 +32,7 @@ class MotionActivityDetector(
 
     private fun ensureStarted() {
         if (activityManager != null) return
+        if (CMMotionActivityManager.authorizationStatus() != CMAuthorizationStatusAuthorized) return
         if (!CMMotionActivityManager.isActivityAvailable()) {
             Log.log("Motion activity not available on this device")
             return
@@ -41,9 +43,9 @@ class MotionActivityDetector(
             if (motion == null) return@startActivityUpdatesToQueue
             Log.log("Motion update: ${motion.describe()}")
             when {
-                motion.stationary -> onStillEnter()
                 motion.walking || motion.running || motion.automotive || motion.cycling ->
                     onStillExit()
+                motion.stationary -> onStillEnter()
             }
         }
     }

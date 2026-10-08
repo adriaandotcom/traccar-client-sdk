@@ -1,26 +1,7 @@
 package org.traccar.client
 
-import kotlinx.serialization.Serializable
-
-@Serializable
-data class Config(
-    val serverUrl: String,
-    val deviceId: String,
-    val location: LocationConfig = LocationConfig(),
-    val wakeLock: Boolean = false,
-    val buffer: Boolean = true,
-    val preferPlatformProviders: Boolean = false,
-    val notification: NotificationConfig = NotificationConfig(),
-) {
-    constructor(serverUrl: String, deviceId: String) : this(serverUrl, deviceId, LocationConfig())
-}
-
-@Serializable
-data class NotificationConfig(
-    val text: String = "Location tracking",
-)
-
-@Serializable
+// Places offline fork: no server, identity, network, upload, or heartbeat configuration.
+data class Config(val location: LocationConfig = LocationConfig())
 data class LocationConfig(
     val accuracy: Accuracy = Accuracy.MEDIUM,
     val distanceMeters: Int = 75,
@@ -29,17 +10,8 @@ data class LocationConfig(
     val stopDetection: Boolean = true,
     val stopTimeoutSeconds: Int = 60,
     val stationaryRadiusMeters: Int = 100,
-    val heartbeatIntervalSeconds: Int = 0,
 )
-
-@Serializable
-enum class Accuracy {
-    HIGHEST,
-    HIGH,
-    MEDIUM,
-    LOW,
-}
-
+enum class Accuracy { HIGHEST, HIGH, MEDIUM, LOW }
 val LocationConfig.effective: LocationConfig
     get() = when {
         accuracy == Accuracy.HIGHEST -> copy(distanceMeters = 0, intervalSeconds = 0)

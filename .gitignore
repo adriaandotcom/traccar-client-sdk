@@ -20,3 +20,6 @@ react-native/lib/
 .flutter-plugins-dependencies
 flutter/pubspec.lock
 flutter/ios/FlutterFramework/
+
+# SwiftPM local binary package metadata
+.build/
